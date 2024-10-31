@@ -1,0 +1,23 @@
+{
+  "name": "dune-realtime-update-script",
+  "version": "1.0.0",
+  "description": "A script for updating Dune tables with realtime data",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@bitcoin-js/tiny-secp256k1-asmjs": "^2.2.3",
+    "axios": "^1.7.7",
+    "bitcoinjs-lib": "^7.0.0-rc.0",
+    "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^10.0.0",
+    "ethers": "^5.0.0"
+  },
+  "author": "Ansh",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/dotenv": "^6.1.1"
+  }
+}
