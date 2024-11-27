@@ -4,28 +4,50 @@ const path = require("path");
 const bitcoin = require("bitcoinjs-lib");
 const ecc = require("@bitcoin-js/tiny-secp256k1-asmjs");
 const axios = require("axios");
-const { throws } = require("assert");
 bitcoin.initEccLib(ecc);
 require("dotenv").config();
+const {
+    S3Client,
+    ListObjectsV2Command,
+    GetObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 async function main() {
     console.log("Updating Genius WK Table");
     await updateGeniusWkTableData();
     console.log("Updating Yellowstone PKP Table");
     await updateYellowstonePkpTableData();
+    console.log("Updating Yellowstone WK Tables");
+    await uploadWKTableData()
 }
 
 // ---------------------------- Constants for Dune API
 
+// Dune API
 const DUNE_API_KEY = process.env.DUNE_API_KEY;
 const DUNE_API_BASE_URL = "https://api.dune.com/api/v1";
 const DUNE_NAMESPACE = "lit_protocol";
+// genius wk
 const DUNE_TABLE_NAME_GENIUS_WK = "genius_wk_api";
 const DUNE_QUERY_ID_GENIUS_WK = 4227011;
+// yellowstone pkp
 const DUNE_TABLE_NAME_YELLOWSTONE_PKP = "yellowstone_pkp_api";
-const DUNE_QUERY_ID_YELLOWSTONE_PKP = 4228242;
+const DUNE_QUERY_ID_YELLOWSTONE_PKP = 4004557;
+// latest blocks
 const DUNE_TABLE_NAME_LATEST_BLOCKS = "latest_blocks_api";
 const DUNE_QUERY_ID_LATEST_BLOCKS = 4228383;
+// k256 wk mainnet
+const DUNE_TABLE_NAME_K256_WK = "k256_wk_api";
+const DUNE_QUERY_ID_K256_WK = 4249711;
+// ed25519 wk mainnet
+const DUNE_TABLE_NAME_ED25119_WK = "ed25519_wk_api";
+const DUNE_QUERY_ID_ED25119_WK = 4249789;
+// k256 wk testnets
+const DUNE_TABLE_NAME_K256_WK_TESTNETS = "k256_wk_api_testnets";
+const DUNE_QUERY_ID_K256_WK_TESTNETS = 4261774;
+// ed25519 wk testnets
+const DUNE_TABLE_NAME_ED25119_WK_TESTNETS = "ed25519_wk_api_testnets";
+const DUNE_QUERY_ID_ED25119_WK_TESTNETS = 4261769;
 
 // ---------------------------- Calls Genius API to fetch realtime data
 
@@ -615,8 +637,8 @@ async function scan(startBlock) {
         chainId,
     });
 
-    const endBlock = 888575;
-    // const endBlock = await provider.getBlockNumber();
+    // const endBlock = 888575;
+    const endBlock = await provider.getBlockNumber();
 
     if (startBlock == endBlock) {
         console.error("No new blocks to scan");
@@ -642,9 +664,15 @@ async function scan(startBlock) {
     return { pkpCsv, blocksCsv };
 }
 
-// ---------------------------- manual control/initialization for yellowstone pkp table
+// ---------------------------- General function to push data to Dune
 
-async function pushYellowstoneCSVToDune() {
+async function pushToDune(
+    _isFilePath,
+    _fileVariable,
+    _filePath,
+    _tableName,
+    _queryId
+) {
     // Axios instance with default config
     const duneApi = axios.create({
         baseURL: DUNE_API_BASE_URL,
@@ -657,21 +685,26 @@ async function pushYellowstoneCSVToDune() {
     try {
         console.log("Clearing existing data...");
         const clearBlocksResponse = await duneApi.post(
-            `/table/${DUNE_NAMESPACE}/${DUNE_TABLE_NAME_YELLOWSTONE_PKP}/clear`
+            `/table/${DUNE_NAMESPACE}/${_tableName}/clear`
         );
         console.log("Clear Response:", clearBlocksResponse.data);
     } catch (error) {
-        console.error("Error in clearing latest blocks table:", error.message);
+        console.error("Error in clearing table:", error.message);
         return;
     }
 
-    let g_pkpCsv = fs.readFileSync("csv/yellowstone_31_10_24.csv", "utf8");
+    let g_pkpCsv;
+    if (_isFilePath == true) {
+        g_pkpCsv = fs.readFileSync(_filePath, "utf8");
+    } else {
+        g_pkpCsv = _fileVariable;
+    }
 
     // Update table with new data
     try {
         console.log("Updating table with new data...");
         const insertResponse = await duneApi.post(
-            `/table/${DUNE_NAMESPACE}/${DUNE_TABLE_NAME_YELLOWSTONE_PKP}/insert`,
+            `/table/${DUNE_NAMESPACE}/${_tableName}/insert`,
             g_pkpCsv,
             {
                 headers: {
@@ -681,10 +714,7 @@ async function pushYellowstoneCSVToDune() {
         );
         console.log("Insert Response:", insertResponse.data);
     } catch (error) {
-        console.error(
-            "Error in updating yellowstone pkp table:",
-            error.message
-        );
+        console.error("Error in updating table:", error.message);
         return;
     }
 
@@ -692,79 +722,408 @@ async function pushYellowstoneCSVToDune() {
     try {
         console.log("Refreshing Yellowstone table on Dune...");
         const refreshResponse = await duneApi.post(
-            `/query/${DUNE_QUERY_ID_YELLOWSTONE_PKP}/execute`
+            `/query/${_queryId}/execute`
         );
         console.log("Refresh Response:", refreshResponse.data);
     } catch (error) {
-        console.error(
-            "Error in refreshing yellowstone pkp table:",
-            error.message
-        );
+        console.error("Error in refreshing table:", error.message);
         return;
     }
+}
+
+// ---------------------------- Fetches WK from AWS and pushes to Dune
+
+async function uploadWKTableData() {
+
+    const region = "us-east-1";
+
+    try {
+        console.log("Updating K256 WK Table for Mainnet");
+
+        const  accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+        const  secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+        const  sessionToken = process.env.AWS_SESSION_TOKEN;
+    
+        const  client = new S3Client({
+            region: region,
+            credentials: {
+                accessKeyId,
+                secretAccessKey,
+                sessionToken,
+            },
+        });
+
+        let bucketName = "lit-wk-pubkeys-production";
+        let prefix = "keyType=K256/";
+
+        const getAllFilesCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: prefix,
+        });
+
+        const getAllFilesResponse = await client.send(getAllFilesCommand);
+
+        if (
+            !getAllFilesResponse.Contents ||
+            getAllFilesResponse.Contents.length === 0
+        ) {
+            throw new Error("No files found in bucket");
+        }
+
+        const latestFile = getAllFilesResponse.Contents.sort(
+            (a, b) => b.LastModified.getTime() - a.LastModified.getTime()
+        )[0];
+
+        console.log("Latest file:", latestFile.Key);
+
+        const getFileContentCommand = new GetObjectCommand({
+            Bucket: "lit-wk-pubkeys-production",
+            Key: latestFile.Key,
+        });
+
+        const getFileContentResponse = await client.send(getFileContentCommand);
+
+        const csvContent =
+            await getFileContentResponse.Body.transformToString();
+
+        const lines = csvContent.split("\n");
+
+        const newHeaders = "network,pkp_address,public_key";
+        lines[0] = newHeaders;
+
+        const modifiedCsvContent = lines.join("\n");
+
+        await pushToDune(
+            false,
+            modifiedCsvContent,
+            undefined,
+            DUNE_TABLE_NAME_K256_WK,
+            DUNE_QUERY_ID_K256_WK
+        );
+
+        console.log("Updated!");
+    } catch (error) {
+        console.error("Error listing objects:", error);
+        throw error;
+    }
+
+    try {
+        console.log("Updating ED25519 WK Table for Mainnet");
+
+        const  accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+        const  secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+        const  sessionToken = process.env.AWS_SESSION_TOKEN;
+    
+        const  client = new S3Client({
+            region: region,
+            credentials: {
+                accessKeyId,
+                secretAccessKey,
+                sessionToken,
+            },
+        });
+
+        let bucketName = "lit-wk-pubkeys-production";
+        let prefix = "keyType=ed25519/";
+
+        const getAllFilesCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: prefix,
+        });
+
+        const getAllFilesResponse = await client.send(getAllFilesCommand);
+
+        if (
+            !getAllFilesResponse.Contents ||
+            getAllFilesResponse.Contents.length === 0
+        ) {
+            throw new Error("No files found in bucket");
+        }
+
+        const latestFile = getAllFilesResponse.Contents.sort(
+            (a, b) => b.LastModified.getTime() - a.LastModified.getTime()
+        )[0];
+
+        console.log("Latest file:", latestFile.Key);
+
+        const getFileContentCommand = new GetObjectCommand({
+            Bucket: "lit-wk-pubkeys-production",
+            Key: latestFile.Key,
+        });
+
+        const getFileContentResponse = await client.send(getFileContentCommand);
+
+        const csvContent =
+            await getFileContentResponse.Body.transformToString();
+
+        const lines = csvContent.split("\n");
+
+        const newHeaders = "network,pkp_address,public_key";
+        lines[0] = newHeaders;
+
+        const modifiedCsvContent = lines.join("\n");
+
+        await pushToDune(
+            false,
+            modifiedCsvContent,
+            undefined,
+            DUNE_TABLE_NAME_ED25119_WK,
+            DUNE_QUERY_ID_ED25119_WK
+        );
+
+        console.log("Updated!");
+    } catch (error) {
+        console.error("Error listing objects:", error);
+        throw error;
+    }
+    
+    try {
+        console.log("Updating K256 WK Table for Testnets");
+
+        const accessKeyId = process.env.TESTNETS_AWS_ACCESS_KEY_ID;
+        const secretAccessKey = process.env.TESTNETS_AWS_SECRET_ACCESS_KEY;
+        const sessionToken = process.env.TESTNETS_AWS_SESSION_TOKEN;
+    
+        const client = new S3Client({
+            region: region,
+            credentials: {
+                accessKeyId,
+                secretAccessKey,
+                sessionToken,
+            },
+        });
+
+        let bucketName = "lit-wk-pubkeys-testnetworks";
+        let prefix = "keyType=K256/";
+
+        const getAllFilesCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: prefix,
+        });
+
+        const getAllFilesResponse = await client.send(getAllFilesCommand);
+
+        if (
+            !getAllFilesResponse.Contents ||
+            getAllFilesResponse.Contents.length === 0
+        ) {
+            throw new Error("No files found in bucket");
+        }
+
+        const latestFile = getAllFilesResponse.Contents.sort(
+            (a, b) => b.LastModified.getTime() - a.LastModified.getTime()
+        )[0];
+
+        console.log("Latest file:", latestFile.Key);
+
+        const getFileContentCommand = new GetObjectCommand({
+            Bucket: "lit-wk-pubkeys-testnetworks",
+            Key: latestFile.Key,
+        });
+
+        const getFileContentResponse = await client.send(getFileContentCommand);
+
+        const csvContent =
+            await getFileContentResponse.Body.transformToString();
+
+        const lines = csvContent.split("\n");
+
+        const newHeaders = "network,pkp_address,public_key";
+        lines[0] = newHeaders;
+
+        const modifiedCsvContent = lines.join("\n");
+
+        await pushToDune(
+            false,
+            modifiedCsvContent,
+            undefined,
+            DUNE_TABLE_NAME_K256_WK_TESTNETS,
+            DUNE_QUERY_ID_K256_WK_TESTNETS
+        );
+
+        console.log("Updated!");
+    } catch (error) {
+        console.error("Error listing objects:", error);
+        throw error;
+    }
+
+    try {
+        console.log("Updating ED25519 WK Table for Testnets");
+
+        const accessKeyId = process.env.TESTNETS_AWS_ACCESS_KEY_ID;
+        const secretAccessKey = process.env.TESTNETS_AWS_SECRET_ACCESS_KEY;
+        const sessionToken = process.env.TESTNETS_AWS_SESSION_TOKEN;
+    
+        const client = new S3Client({
+            region: region,
+            credentials: {
+                accessKeyId,
+                secretAccessKey,
+                sessionToken,
+            },
+        });
+
+        let bucketName = "lit-wk-pubkeys-testnetworks";
+        let prefix = "keyType=ed25519/";
+
+        const getAllFilesCommand = new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: prefix,
+        });
+
+        const getAllFilesResponse = await client.send(getAllFilesCommand);
+
+        if (
+            !getAllFilesResponse.Contents ||
+            getAllFilesResponse.Contents.length === 0
+        ) {
+            throw new Error("No files found in bucket");
+        }
+
+        const latestFile = getAllFilesResponse.Contents.sort(
+            (a, b) => b.LastModified.getTime() - a.LastModified.getTime()
+        )[0];
+
+        console.log("Latest file:", latestFile.Key);
+
+        const getFileContentCommand = new GetObjectCommand({
+            Bucket: "lit-wk-pubkeys-testnetworks",
+            Key: latestFile.Key,
+        });
+
+        const getFileContentResponse = await client.send(getFileContentCommand);
+
+        const csvContent =
+            await getFileContentResponse.Body.transformToString();
+
+        const lines = csvContent.split("\n");
+
+        const newHeaders = "network,pkp_address,public_key";
+        lines[0] = newHeaders;
+
+        const modifiedCsvContent = lines.join("\n");
+
+        await pushToDune(
+            false,
+            modifiedCsvContent,
+            undefined,
+            DUNE_TABLE_NAME_ED25119_WK_TESTNETS,
+            DUNE_QUERY_ID_ED25119_WK_TESTNETS
+        );
+
+        console.log("Updated!");
+    } catch (error) {
+        console.error("Error listing objects:", error);
+        throw error;
+    }
+}
+
+// ---------------------------- manual control/initialization for pkp table
+
+// Note - Make sure to turn off clear table before calling this function
+async function pushYellowstoneCSVToDune() {
+    console.log("Pushing Yellowstone PKP data to Dune");
+    const FILE_PATH = "csv/yellowstone_31_10_24.csv";
+    await pushToDune(
+        FILE_PATH,
+        DUNE_TABLE_NAME_YELLOWSTONE_PKP,
+        DUNE_QUERY_ID_YELLOWSTONE_PKP
+    );
+    console.log("Yellowstone PKP table updated successfully");
 }
 
 // ---------------------------- manual control/initialization for blocks table
 
 async function pushBlocksCSVToDune() {
-    // Axios instance with default config
-    const duneApi = axios.create({
-        baseURL: DUNE_API_BASE_URL,
-        headers: {
-            "X-DUNE-API-KEY": DUNE_API_KEY,
-        },
-    });
-
-    // Clear existing Blocks table data
-    try {
-        console.log("Clearing existing data...");
-        const clearBlocksResponse = await duneApi.post(
-            `/table/${DUNE_NAMESPACE}/${DUNE_TABLE_NAME_LATEST_BLOCKS}/clear`
-        );
-        console.log("Clear Response:", clearBlocksResponse.data);
-    } catch (error) {
-        console.error("Error in clearing latest blocks table:", error.message);
-        return;
-    }
-
-    let g_blocksCsv = fs.readFileSync("csv/blocks_31_10_24.csv", "utf8");
-
-    // Update Blocks table
-    try {
-        console.log("Updating Blocks table in database...");
-        const insertBlocksResponse = await duneApi.post(
-            `/table/${DUNE_NAMESPACE}/${DUNE_TABLE_NAME_LATEST_BLOCKS}/insert`,
-            g_blocksCsv,
-            {
-                headers: {
-                    "Content-Type": "text/csv",
-                },
-            }
-        );
-        console.log("Insert Blocks Response:", insertBlocksResponse.data);
-    } catch (error) {
-        console.error("Error in updating latest blocks table:", error.message);
-    }
-
-    // Refresh Blocks table by running query
-    try {
-        console.log("Refreshing Blocks table on Dune...");
-        const refreshBlocksResponse = await duneApi.post(
-            `/query/${DUNE_QUERY_ID_LATEST_BLOCKS}/execute`
-        );
-        console.log("Refresh Response:", refreshBlocksResponse.data);
-    } catch (error) {
-        console.error(
-            "Error in refreshing latest blocks table:",
-            error.message
-        );
-        return;
-    }
+    console.log("Pushing Blocks data to Dune");
+    const FILE_PATH = "csv/blocks_31_10_24.csv";
+    await pushToDune(
+        true,
+        undefined,
+        FILE_PATH,
+        DUNE_TABLE_NAME_LATEST_BLOCKS,
+        DUNE_QUERY_ID_LATEST_BLOCKS
+    );
+    console.log("Blocks table updated successfully");
 }
+
+// ---------------------------- manual control/initialization for wk table
+
+async function pushK256CSVToDune() {
+    console.log("Pushing K256 WK data to Dune");
+    const FILE_PATH = "csv/k256_5_11_24.csv";
+    await pushToDune(
+        true,
+        undefined,
+        FILE_PATH,
+        DUNE_TABLE_NAME_K256_WK,
+        DUNE_QUERY_ID_K256_WK
+    );
+    console.log("K256 WK table updated successfully");
+}
+
+async function pushED25119CSVToDune() {
+    console.log("Pushing ED25519 WK data to Dune");
+    const FILE_PATH = "csv/ed25519_5_11_24.csv";
+    await pushToDune(
+        true,
+        undefined,
+        FILE_PATH,
+        DUNE_TABLE_NAME_ED25119_WK,
+        DUNE_QUERY_ID_ED25119_WK
+    );
+    console.log("ED25519 WK table updated successfully");
+}
+
+async function pushK256TestnetsCSVToDune() {
+    console.log("Pushing ED25519 WK data to Dune");
+    const FILE_PATH = "csv/k256_5_11_24_testnets.csv";
+    await pushToDune(
+        true,
+        undefined,
+        FILE_PATH,
+        DUNE_TABLE_NAME_K256_WK_TESTNETS,
+        DUNE_QUERY_ID_K256_WK_TESTNETS
+    );
+    console.log("K256 WK Testnets table updated successfully");
+}
+
+async function pushED25119TestnetsCSVToDune() {
+    console.log("Pushing ED25519 WK data to Dune");
+    const FILE_PATH = "csv/ed25519_5_11_24_testnets.csv";
+    await pushToDune(
+        true,
+        undefined,
+        FILE_PATH,
+        DUNE_TABLE_NAME_ED25119_WK_TESTNETS,
+        DUNE_QUERY_ID_ED25119_WK_TESTNETS
+    );
+    console.log("ED25519 WK Testnets table updated successfully");
+}
+
+async function pushAllWKTableData() {
+    console.log("Updating K256 WK Table");
+    await pushK256CSVToDune();
+    console.log("Updating ED25519 WK Table");
+    await pushED25119CSVToDune();
+    console.log("Updating K256 WK Testnets Table");
+    await pushK256TestnetsCSVToDune();
+    console.log("Updating ED25519 WK Testnets Table");
+    await pushED25119TestnetsCSVToDune();
+}
+
+// ---------------------------- methods call
+
+// updateGeniusWkTableData();
+// updateYellowstonePkpTableData();
+// uploadWKTableData();
 
 // pushYellowstoneCSVToDune();
 // pushBlocksCSVToDune();
-// updateGeniusWkTableData();
-// updateYellowstonePkpTableData();
+// pushK256CSVToDune()
+// pushED25119CSVToDune()
+// pushK256TestnetsCSVToDune()
+// pushED25119TestnetsCSVToDune()
+// pushAllWKTableData()
 
 main();

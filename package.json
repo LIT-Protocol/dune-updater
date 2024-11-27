@@ -7,13 +7,16 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.701.0",
     "@bitcoin-js/tiny-secp256k1-asmjs": "^2.2.3",
+    "aws-sdk": "^2.1692.0",
     "axios": "^1.7.7",
     "bitcoinjs-lib": "^7.0.0-rc.0",
     "csv-parser": "^3.0.0",
     "csv-writer": "^1.6.0",
     "dotenv": "^10.0.0",
-    "ethers": "^5.0.0"
+    "ethers": "^5.0.0",
+    "papaparse": "^5.4.1"
   },
   "author": "Ansh",
   "license": "MIT",
