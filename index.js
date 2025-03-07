@@ -15,10 +15,10 @@ const {
 async function main() {
     console.log("Updating Genius WK Table");
     await updateGeniusWkTableData();
-    console.log("Updating Yellowstone PKP Table");
-    await updateYellowstonePkpTableData();
     console.log("Updating Yellowstone WK Tables");
     await uploadWKTableData()
+    console.log("Updating Yellowstone PKP Table");
+    await updateYellowstonePkpTableData();
 }
 
 // ---------------------------- Constants for Dune API
